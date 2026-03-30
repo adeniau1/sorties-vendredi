@@ -141,8 +141,8 @@ def fetch_releases(friday: date) -> list[dict]:
     return releases
 
 
-def fetch_releases_bulk(fridays: list[date]) -> dict:
-    """Fetch releases for multiple Fridays in a single API call."""
+def _fetch_batch(fridays: list[date]) -> dict:
+    """Appel API pour un lot de semaines (2 max recommandé)."""
     import re
 
     weeks_desc = "\n".join(
@@ -161,37 +161,46 @@ def fetch_releases_bulk(fridays: list[date]) -> dict:
     )
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    print(f"  → Appel API Anthropic bulk ({len(fridays)} semaines)...")
-
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=8000,
+        max_tokens=4000,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": prompt}]
     )
 
-    text = ""
-    for block in response.content:
-        if block.type == "text":
-            text += block.text
-
+    text = "".join(b.text for b in response.content if b.type == "text")
     clean = re.sub(r"```json|```", "", text).strip()
     start = clean.find("{")
     if start == -1:
         raise ValueError("Pas de JSON dans la réponse Anthropic")
     data, _ = json.JSONDecoder().raw_decode(clean, start)
-    weeks_data = data.get("weeks", {})
-    result = {}
+    return data.get("weeks", {})
 
-    for friday in fridays:
-        key = friday_key(friday)
-        releases = weeks_data.get(key, {}).get("releases", [])
-        releases.sort(key=lambda r: r["score"], reverse=True)
-        print(f"  ✅ {fmt_date(friday)} — {len(releases)} sorties — recherche Deezer...")
-        for r in releases:
-            r["deezer_url"] = get_deezer_link(r["artist"], r["title"])
-            print(f"     {'✓' if r['deezer_url'] else '✗'} {r['artist']} — {r['title']}")
-        result[key] = releases
+
+def fetch_releases_bulk(fridays: list[date], batch_size: int = 2) -> dict:
+    """Fetch releases par lots de 2 semaines pour rester sous le rate limit."""
+    import time
+
+    result = {}
+    batches = [fridays[i:i+batch_size] for i in range(0, len(fridays), batch_size)]
+
+    for idx, batch in enumerate(batches):
+        if idx > 0:
+            print(f"  ⏳ Pause 35s (rate limit)...")
+            time.sleep(35)
+
+        print(f"  → Lot {idx+1}/{len(batches)} ({len(batch)} semaines)...")
+        weeks_data = _fetch_batch(batch)
+
+        for friday in batch:
+            key = friday_key(friday)
+            releases = weeks_data.get(key, {}).get("releases", [])
+            releases.sort(key=lambda r: r["score"], reverse=True)
+            print(f"  ✅ {fmt_date(friday)} — {len(releases)} sorties — recherche Deezer...")
+            for r in releases:
+                r["deezer_url"] = get_deezer_link(r["artist"], r["title"])
+                print(f"     {'✓' if r['deezer_url'] else '✗'} {r['artist']} — {r['title']}")
+            result[key] = releases
 
     return result
 
