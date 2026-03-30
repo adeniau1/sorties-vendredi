@@ -10,14 +10,14 @@ from flask import Flask, jsonify, render_template_string
 
 from sorties_vendredi import (
     get_last_friday, friday_key, fmt_date,
-    fetch_releases_bulk, load_history, save_history,
+    fetch_releases, load_history, save_history,
     get_last_n_fridays, MAX_HISTORY,
 )
 
 app = Flask(__name__)
 
 _lock = threading.Lock()
-scan_state = {"running": False, "error": None, "progress": None}
+scan_state = {"running": False, "error": None}
 
 # ── TEMPLATE MOBILE ──────────────────────────────────────────────────────────
 
@@ -57,8 +57,6 @@ TEMPLATE = """<!DOCTYPE html>
     }
     #scan-btn:disabled { opacity: .4; cursor: not-allowed; }
     #scan-btn.loading { background: #1a1a1a; color: #e8ff47; border: 1px solid #e8ff47; }
-    #progress-bar { height: 2px; background: #1e1e1e; border-radius: 1px; margin-top: 10px; overflow: hidden; display: none; }
-    #progress-fill { height: 100%; background: #e8ff47; border-radius: 1px; transition: width .4s ease; }
     #status-msg { margin-top: 10px; font-family: monospace; font-size: 11px;
       color: #555; text-align: center; min-height: 18px; }
     #status-msg.error { color: #ff6450; }
@@ -121,9 +119,8 @@ TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <div class="scan-wrap">
-    <button id="scan-btn" onclick="startScan()">⚡ Scanner les 6 derniers vendredis</button>
+    <button id="scan-btn" onclick="startScan()">⚡ Scanner cette semaine</button>
     <div id="status-msg"></div>
-    <div id="progress-bar"><div id="progress-fill" style="width:0%"></div></div>
   </div>
 
   <div id="weeks">
@@ -184,18 +181,14 @@ function setStatus(msg, error) {
 
 function setLoading(on) {
   const btn = document.getElementById('scan-btn');
-  const bar = document.getElementById('progress-bar');
   btn.disabled = on;
   if (on) {
     btn.className = 'loading';
     btn.innerHTML = 'Scan en cours\u00a0<span class="dots"><span>.</span><span>.</span><span>.</span></span>';
     setStatus('Recherche des sorties via Claude + Deezer…');
-    bar.style.display = 'block';
   } else {
     btn.className = '';
-    btn.innerHTML = '⚡ Scanner les 6 derniers vendredis';
-    bar.style.display = 'none';
-    document.getElementById('progress-fill').style.width = '0%';
+    btn.innerHTML = '⚡ Scanner cette semaine';
   }
 }
 
@@ -216,12 +209,7 @@ function startPolling() {
   if (polling) clearInterval(polling);
   polling = setInterval(async () => {
     try {
-      const { running, error, progress } = await (await fetch('/api/status')).json();
-      if (progress) {
-        const [cur, tot] = progress.split('/').map(Number);
-        document.getElementById('progress-fill').style.width = (cur / tot * 100) + '%';
-        setStatus('Vendredi ' + cur + '/' + tot + ' en cours…');
-      }
+      const { running, error } = await (await fetch('/api/status')).json();
       if (error) {
         clearInterval(polling); setLoading(false);
         setStatus('❌ ' + error, true);
@@ -282,23 +270,11 @@ def trigger_scan():
 
     def _run():
         try:
-            history = load_history()
-            fridays = get_last_n_fridays(MAX_HISTORY)
-            to_scan = [f for f in fridays if friday_key(f) not in history]
-            total   = len(to_scan)
-
-            if total == 0:
-                with _lock:
-                    scan_state['progress'] = 'already_cached'
-            else:
-                with _lock:
-                    scan_state['progress'] = f"0/{total}"
-                bulk = fetch_releases_bulk(to_scan)
-                history.update(bulk)
-                with _lock:
-                    scan_state['progress'] = f"{total}/{total}"
-
-            valid = {friday_key(f) for f in fridays}
+            friday   = get_last_friday()
+            releases = fetch_releases(friday)
+            history  = load_history()
+            history[friday_key(friday)] = releases
+            valid    = {friday_key(f) for f in get_last_n_fridays(MAX_HISTORY)}
             save_history({k: v for k, v in history.items() if k in valid})
         except Exception as e:
             with _lock:
@@ -306,7 +282,6 @@ def trigger_scan():
         finally:
             with _lock:
                 scan_state['running'] = False
-                scan_state['progress'] = None
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({'status': 'started'})
