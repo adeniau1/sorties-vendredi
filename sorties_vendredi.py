@@ -118,13 +118,11 @@ def fetch_releases(friday: date) -> list[dict]:
         messages=[{"role": "user", "content": prompt}]
     )
 
-    # Extraire le texte JSON de la réponse
     text = ""
     for block in response.content:
         if block.type == "text":
             text += block.text
 
-    # Parser le JSON
     import re
     clean = re.sub(r"```json|```", "", text).strip()
     match = re.search(r"\{[\s\S]*\}", clean)
@@ -141,6 +139,61 @@ def fetch_releases(friday: date) -> list[dict]:
         print(f"     {'✓' if r['deezer_url'] else '✗'} {r['artist']} — {r['title']}")
 
     return releases
+
+
+def fetch_releases_bulk(fridays: list[date]) -> dict:
+    """Fetch releases for multiple Fridays in a single API call."""
+    import re
+
+    weeks_desc = "\n".join(
+        f"- Semaine {i+1} (clé JSON : {friday_key(f)}) : "
+        f"du {fmt_date(get_monday(f))} au {fmt_date(f)}"
+        for i, f in enumerate(fridays)
+    )
+
+    prompt = (
+        MUSIC_PROFILE.format(min_score=MIN_SCORE, max_releases=MAX_RELEASES)
+        + f"\n\nCherche les sorties musicales pour CHACUNE des {len(fridays)} semaines suivantes :\n"
+        + weeks_desc
+        + "\n\nRéponds en JSON valide (sans markdown) avec ce format exact, "
+        + "une entrée par vendredi :\n"
+        + '{"weeks":{"YYYY-MM-DD":{"releases":[{"artist":"...","title":"...","type":"...","score":85,"why":"..."}]},...}}'
+    )
+
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    print(f"  → Appel API Anthropic bulk ({len(fridays)} semaines)...")
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=8000,
+        tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    text = ""
+    for block in response.content:
+        if block.type == "text":
+            text += block.text
+
+    clean = re.sub(r"```json|```", "", text).strip()
+    match = re.search(r"\{[\s\S]*\}", clean)
+    if not match:
+        raise ValueError("Pas de JSON dans la réponse Anthropic")
+
+    weeks_data = json.loads(match.group(0)).get("weeks", {})
+    result = {}
+
+    for friday in fridays:
+        key = friday_key(friday)
+        releases = weeks_data.get(key, {}).get("releases", [])
+        releases.sort(key=lambda r: r["score"], reverse=True)
+        print(f"  ✅ {fmt_date(friday)} — {len(releases)} sorties — recherche Deezer...")
+        for r in releases:
+            r["deezer_url"] = get_deezer_link(r["artist"], r["title"])
+            print(f"     {'✓' if r['deezer_url'] else '✗'} {r['artist']} — {r['title']}")
+        result[key] = releases
+
+    return result
 
 # ── HISTORIQUE JSON ───────────────────────────────────────────
 def load_history() -> dict:

@@ -10,7 +10,7 @@ from flask import Flask, jsonify, render_template_string
 
 from sorties_vendredi import (
     get_last_friday, friday_key, fmt_date,
-    fetch_releases, load_history, save_history,
+    fetch_releases_bulk, load_history, save_history,
     get_last_n_fridays, MAX_HISTORY,
 )
 
@@ -291,11 +291,12 @@ def trigger_scan():
                 with _lock:
                     scan_state['progress'] = 'already_cached'
             else:
-                for i, friday in enumerate(to_scan, 1):
-                    with _lock:
-                        scan_state['progress'] = f"{i}/{total}"
-                    releases = fetch_releases(friday)
-                    history[friday_key(friday)] = releases
+                with _lock:
+                    scan_state['progress'] = f"0/{total}"
+                bulk = fetch_releases_bulk(to_scan)
+                history.update(bulk)
+                with _lock:
+                    scan_state['progress'] = f"{total}/{total}"
 
             valid = {friday_key(f) for f in fridays}
             save_history({k: v for k, v in history.items() if k in valid})
