@@ -176,11 +176,11 @@ def fetch_releases_bulk(fridays: list[date]) -> dict:
             text += block.text
 
     clean = re.sub(r"```json|```", "", text).strip()
-    match = re.search(r"\{[\s\S]*\}", clean)
-    if not match:
+    start = clean.find("{")
+    if start == -1:
         raise ValueError("Pas de JSON dans la réponse Anthropic")
-
-    weeks_data = json.loads(match.group(0)).get("weeks", {})
+    data, _ = json.JSONDecoder().raw_decode(clean, start)
+    weeks_data = data.get("weeks", {})
     result = {}
 
     for friday in fridays:
