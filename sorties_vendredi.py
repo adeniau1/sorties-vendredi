@@ -177,30 +177,39 @@ def _fetch_batch(fridays: list[date]) -> dict:
     return data.get("weeks", {})
 
 
-def fetch_releases_bulk(fridays: list[date], batch_size: int = 2) -> dict:
-    """Fetch releases par lots de 2 semaines pour rester sous le rate limit."""
+def fetch_releases_bulk(fridays: list[date]) -> dict:
+    """Fetch releases une semaine à la fois avec retry automatique sur rate limit."""
     import time
 
     result = {}
-    batches = [fridays[i:i+batch_size] for i in range(0, len(fridays), batch_size)]
 
-    for idx, batch in enumerate(batches):
+    for idx, friday in enumerate(fridays):
         if idx > 0:
-            print(f"  ⏳ Pause 35s (rate limit)...")
-            time.sleep(35)
+            print(f"  ⏳ Pause 65s entre les semaines...")
+            time.sleep(65)
 
-        print(f"  → Lot {idx+1}/{len(batches)} ({len(batch)} semaines)...")
-        weeks_data = _fetch_batch(batch)
+        print(f"  → Semaine {idx+1}/{len(fridays)} : {fmt_date(friday)}...")
 
-        for friday in batch:
-            key = friday_key(friday)
-            releases = weeks_data.get(key, {}).get("releases", [])
-            releases.sort(key=lambda r: r["score"], reverse=True)
-            print(f"  ✅ {fmt_date(friday)} — {len(releases)} sorties — recherche Deezer...")
-            for r in releases:
-                r["deezer_url"] = get_deezer_link(r["artist"], r["title"])
-                print(f"     {'✓' if r['deezer_url'] else '✗'} {r['artist']} — {r['title']}")
-            result[key] = releases
+        for attempt in range(3):
+            try:
+                weeks_data = _fetch_batch([friday])
+                break
+            except Exception as e:
+                if "rate_limit" in str(e).lower() or "429" in str(e):
+                    wait = 65 * (attempt + 1)
+                    print(f"  ⏳ Rate limit (tentative {attempt+1}/3), pause {wait}s...")
+                    time.sleep(wait)
+                else:
+                    raise
+
+        key = friday_key(friday)
+        releases = weeks_data.get(key, {}).get("releases", [])
+        releases.sort(key=lambda r: r["score"], reverse=True)
+        print(f"  ✅ {fmt_date(friday)} — {len(releases)} sorties — recherche Deezer...")
+        for r in releases:
+            r["deezer_url"] = get_deezer_link(r["artist"], r["title"])
+            print(f"     {'✓' if r['deezer_url'] else '✗'} {r['artist']} — {r['title']}")
+        result[key] = releases
 
     return result
 
